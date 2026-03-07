@@ -1,0 +1,24 @@
+[relay]
+source = "tcp"          # tcp | serial | udp | file
+
+# --- TCPSource (source = "tcp") ---
+# Bridge Command NMEA TCP output. Configure in BC: Connections → NMEA → TCP server.
+tcp_host = "localhost"
+tcp_port = 55554
+
+# --- SerialSource (source = "serial") ---
+serial_device = "/dev/ttyUSB0"
+
+# --- UDPSource (source = "udp") ---
+udp_port = 10110
+
+# --- FileSource (source = "file") ---
+file_path = "relay/tests/fixtures/sample.nmea"
+
+[sink]
+# Relay TCP server — the daemon connects here.
+port = 10110
+
+[daemon]
+relay_host = "localhost"  # set to Pi IP when relay and daemon are on different hosts
+use_system_time = false   # set true if source timestamps are historical (e.g. BC replay mode)
