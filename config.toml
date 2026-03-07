@@ -1,5 +1,5 @@
 [relay]
-source = "tcp"          # tcp | serial | udp | file
+source = "udp"          # tcp | serial | udp | file
 
 # --- TCPSource (source = "tcp") ---
 # Bridge Command NMEA TCP output. Configure in BC: Connections → NMEA → TCP server.
