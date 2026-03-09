@@ -22,3 +22,11 @@ port = 10110
 [daemon]
 relay_host = "localhost"  # set to Pi IP when relay and daemon are on different hosts
 use_system_time = false   # set true if source timestamps are historical (e.g. BC replay mode)
+
+[upload]
+host = "crowdsource.kahu.earth"
+port = 9900
+# api_key is read from the KAHU_API_KEY environment variable; set it here as a
+# fallback for dev use only — never commit a real key.
+api_key = ""
+points_per_track = 10     # flush a track batch to the server every N target detections

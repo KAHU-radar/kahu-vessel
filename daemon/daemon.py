@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from pathlib import Path
 
 from daemon.fusion import compute_target_position
 from daemon.nmea import HDT, RMC, TTM, parse_hdt, parse_rmc, parse_ttm, preprocess
-from daemon.submit import submit
+from daemon.submit import init as _submit_init, submit
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +142,19 @@ def main() -> None:
     relay_host = config["daemon"]["relay_host"]
     relay_port = config["sink"]["port"]
     use_system_time = config["daemon"].get("use_system_time", False)
+
+    upload_cfg = config.get("upload", {})
+    api_key = os.environ.get("KAHU_API_KEY", upload_cfg.get("api_key", ""))
+    if api_key:
+        _submit_init(
+            host=upload_cfg.get("host", "crowdsource.kahu.earth"),
+            port=int(upload_cfg.get("port", 9900)),
+            api_key=api_key,
+            points_per_track=int(upload_cfg.get("points_per_track", 10)),
+        )
+    else:
+        log.warning("KAHU_API_KEY not set — upload disabled (log-only mode)")
+
     asyncio.run(run(relay_host, relay_port, use_system_time))
 
 
