@@ -12,6 +12,7 @@ Per line pipeline:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import os
@@ -132,19 +133,34 @@ def load_config(path: Path) -> dict:
         return tomllib.load(f)
 
 
+def _resolve_config_path() -> Path:
+    """Return config path: ~/.kahu/config.toml if it exists, else package default."""
+    user_config = Path.home() / ".kahu" / "config.toml"
+    if user_config.exists():
+        return user_config
+    return Path(__file__).parent.parent / "config.toml"
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
-    config_path = Path(__file__).parent.parent / "config.toml"
+
+    parser = argparse.ArgumentParser(description="KAHU vessel daemon")
+    parser.add_argument("--api-key", metavar="UUID", help="API key (overrides config and KAHU_API_KEY env var)")
+    parser.add_argument("--config", metavar="PATH", help="Path to config.toml (default: ~/.kahu/config.toml)")
+    args = parser.parse_args()
+
+    config_path = Path(args.config) if args.config else _resolve_config_path()
     config = load_config(config_path)
+    log.info("using config: %s", config_path)
     relay_host = config["daemon"]["relay_host"]
     relay_port = config["sink"]["port"]
     use_system_time = config["daemon"].get("use_system_time", False)
 
     upload_cfg = config.get("upload", {})
-    api_key = os.environ.get("KAHU_API_KEY", upload_cfg.get("api_key", ""))
+    api_key = args.api_key or os.environ.get("KAHU_API_KEY") or upload_cfg.get("api_key", "")
     if api_key:
         _submit_init(
             host=upload_cfg.get("host", "crowdsource.kahu.earth"),
