@@ -20,8 +20,8 @@ file_path = "relay/tests/fixtures/sample.nmea"
 port = 10110
 
 [daemon]
-relay_host = "localhost"  # set to Pi IP when relay and daemon are on different hosts
-use_system_time = false   # set true if source timestamps are historical (e.g. BC replay mode)
+relay_host = "localhost"  # set to radar's ip address
+use_system_time = true    # set false if using historical data
 
 [upload]
 host = "crowdsource.kahu.earth"
