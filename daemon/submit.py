@@ -118,7 +118,11 @@ class AvroUploader:
         track_id = buf.track_id
         start_ms = int(buf.start.timestamp() * 1000)
         points = buf.points[:]
-        self._buffers[target_num] = _TrackBuffer()
+        # Reuse the same track_id so the server appends and time-sorts all
+        # batches into one route rather than creating a new route per batch.
+        new_buf = _TrackBuffer()
+        new_buf.track_id = track_id
+        self._buffers[target_num] = new_buf
         self._queue.put((track_id, start_ms, points))
 
     # ------------------------------------------------------------------
