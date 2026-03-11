@@ -204,12 +204,18 @@ def _nmea_lon(lon_str: str, ew: str) -> float:
 
 
 def _parse_rmc_time(time_str: str, date_str: str) -> datetime:
-    """Parse RMC time (hhmmss.ss) + date (ddmmyy) into a UTC datetime."""
+    """Parse RMC time (hhmmss.ss) + date (ddmmyy or yyyymmdd) into a UTC datetime."""
     h = int(time_str[0:2])
     m = int(time_str[2:4])
     s = int(time_str[4:6])
-    day = int(date_str[0:2])
-    month = int(date_str[2:4])
-    yy = int(date_str[4:6])
-    year = (1900 + yy) if yy >= 80 else (2000 + yy)
+    if len(date_str) == 8:
+        # Non-standard 8-digit YYYYMMDD (e.g. Bridge Command)
+        year  = int(date_str[0:4])
+        month = int(date_str[4:6])
+        day   = int(date_str[6:8])
+    else:
+        day   = int(date_str[0:2])
+        month = int(date_str[2:4])
+        yy    = int(date_str[4:6])
+        year  = (1900 + yy) if yy >= 80 else (2000 + yy)
     return datetime(year, month, day, h, m, s, tzinfo=timezone.utc)
