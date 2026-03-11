@@ -12,6 +12,7 @@ in tests that don't exercise the upload path).
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import socket
 import threading
@@ -58,11 +59,17 @@ def submit(ttm: TTM, lat: float, lon: float, timestamp: datetime) -> None:
 # Per-target track buffer
 # ---------------------------------------------------------------------------
 
+_MAX_SPEED_MS = 30 * 1852 / 3600  # 30 knots in m/s — reject jumps faster than this
+
+
 @dataclass
 class _TrackBuffer:
     track_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     start: datetime | None = None
     points: list = field(default_factory=list)
+    last_lat: float | None = None
+    last_lon: float | None = None
+    last_time: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +112,25 @@ class AvroUploader:
         self, target_num: int, lat: float, lon: float, timestamp: datetime
     ) -> None:
         buf = self._buffers.setdefault(target_num, _TrackBuffer())
+
+        # Reject implausible jumps (ARPA scan-cycle noise from simulator/radar).
+        if buf.last_lat is not None:
+            dt = (timestamp - buf.last_time).total_seconds()
+            if dt > 0:
+                dlat = (lat - buf.last_lat) * 111_000
+                dlon = (lon - buf.last_lon) * 111_000 * abs(math.cos(math.radians(lat)))
+                dist_m = math.hypot(dlat, dlon)
+                if dist_m / dt > _MAX_SPEED_MS:
+                    log.debug(
+                        "target %02d — rejected outlier: %.0fm in %.1fs (%.0f kn)",
+                        target_num, dist_m, dt, (dist_m / dt) / (1852 / 3600),
+                    )
+                    return
+
+        buf.last_lat = lat
+        buf.last_lon = lon
+        buf.last_time = timestamp
+
         if buf.start is None:
             buf.start = timestamp
         offset_s = (timestamp - buf.start).total_seconds()
@@ -120,8 +146,12 @@ class AvroUploader:
         points = buf.points[:]
         # Reuse the same track_id so the server appends and time-sorts all
         # batches into one route rather than creating a new route per batch.
+        # Carry last position forward so the outlier filter works across batches.
         new_buf = _TrackBuffer()
         new_buf.track_id = track_id
+        new_buf.last_lat = buf.last_lat
+        new_buf.last_lon = buf.last_lon
+        new_buf.last_time = buf.last_time
         self._buffers[target_num] = new_buf
         self._queue.put((track_id, start_ms, points))
 
