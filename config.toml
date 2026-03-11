@@ -20,7 +20,7 @@ file_path = "relay/tests/fixtures/sample.nmea"
 port = 10110
 
 [daemon]
-relay_host = "localhost"  # set to radar's ip address
+radar_host = "localhost"  # set to the IP of the machine running the relay
 use_system_time = true    # set false if using historical data
 
 [upload]

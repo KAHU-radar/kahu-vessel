@@ -134,10 +134,7 @@ def load_config(path: Path) -> dict:
 
 
 def _resolve_config_path() -> Path:
-    """Return config path: ~/.kahu/config.toml if it exists, else package default."""
-    user_config = Path.home() / ".kahu" / "config.toml"
-    if user_config.exists():
-        return user_config
+    """Return the package config path (~/kahu-vessel/config.toml)."""
     return Path(__file__).parent.parent / "config.toml"
 
 
@@ -149,13 +146,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="KAHU vessel daemon")
     parser.add_argument("--api-key", metavar="UUID", help="API key (overrides config and KAHU_API_KEY env var)")
-    parser.add_argument("--config", metavar="PATH", help="Path to config.toml (default: ~/.kahu/config.toml)")
+    parser.add_argument("--config", metavar="PATH", help="Path to config.toml (default: ~/kahu-vessel/config.toml)")
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else _resolve_config_path()
     config = load_config(config_path)
     log.info("using config: %s", config_path)
-    relay_host = config["daemon"]["relay_host"]
+    relay_host = config["daemon"]["radar_host"]
     relay_port = config["sink"]["port"]
     use_system_time = config["daemon"].get("use_system_time", False)
 
