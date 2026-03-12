@@ -26,9 +26,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import os
+import time
 import tomllib
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,9 +44,9 @@ _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 30.0
 _STALENESS_THRESHOLD = 10.0  # seconds; see ARCHITECTURE.md §5
 
-# Rolling-average window for smooth_position().
-# Increase to smooth more; decrease for less lag.  1 = off.
-_SMOOTH_N = 3
+# Measurement weight for smooth_position().
+# 1.0 = raw measurement (no smoothing).  Lower = smoother but slightly more lag.
+_SMOOTH_ALPHA = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -53,14 +54,23 @@ _SMOOTH_N = 3
 # ---------------------------------------------------------------------------
 
 @dataclass
+class _TargetTrack:
+    """Dead-reckoning state for one ARPA target, used by smooth_position()."""
+    lat: float          # last smoothed position (degrees)
+    lon: float
+    vel_lat: float      # velocity (degrees/second)
+    vel_lon: float
+    last_t: float       # time.monotonic() of last update
+
+
+@dataclass
 class _State:
     last_hdt: HDT | None = None
     last_hdt_at: datetime | None = None
     last_rmc: RMC | None = None
     last_rmc_at: datetime | None = None
-    # Per-target position history for the rolling average smoother.
-    # Key: TTM target number (int).  Value: deque of (lat, lon) tuples.
-    smooth_positions: dict[int, deque] = field(default_factory=dict)
+    # Per-target dead-reckoning state for smooth_position().
+    target_tracks: dict[int, _TargetTrack] = field(default_factory=dict)
 
 
 def _age(ts: datetime | None) -> float:
@@ -75,23 +85,52 @@ def _age(ts: datetime | None) -> float:
 # ---------------------------------------------------------------------------
 
 def smooth_position(
-    state: _State, target_num: int, lat: float, lon: float
+    state: _State, target_num: int,
+    lat: float, lon: float,
+    speed_kts: float, course_deg: float,
 ) -> tuple[float, float]:
-    """Rolling average of the last _SMOOTH_N positions for one ARPA target.
+    """Velocity-assisted complementary filter for one ARPA target.
 
-    This is the only filter on the output position.  It kills the zig-zag
-    caused by 0.1 nm range quantization (targets alternating between adjacent
-    bins each sweep) without distorting the track geometry.
+    Uses the TTM speed/course to dead-reckon where the target should be,
+    then blends the prediction with the (quantized) measurement:
 
-    Returns the raw point until the window fills, then returns the mean.
-    If you need stronger smoothing, raise _SMOOTH_N.  Don't add another filter
+        output = _SMOOTH_ALPHA * measurement + (1 - _SMOOTH_ALPHA) * prediction
+
+    For a moving target the velocity prediction absorbs most of the motion,
+    so quantization jumps (0.1 nm ≈ 185 m) are a small correction rather
+    than the whole signal.  Lag ≈ 2-3 samples instead of N/2 for a rolling
+    average — no need for a large window.
+
+    If you need more smoothing, lower _SMOOTH_ALPHA.  Don't add another filter
     on top of this one — fix the root cause instead.
     """
-    buf = state.smooth_positions.setdefault(target_num, deque(maxlen=_SMOOTH_N))
-    buf.append((lat, lon))
-    avg_lat = sum(p[0] for p in buf) / len(buf)
-    avg_lon = sum(p[1] for p in buf) / len(buf)
-    return avg_lat, avg_lon
+    now = time.monotonic()
+
+    # Convert TTM velocity to degrees/second.
+    speed_ms = speed_kts * 1852.0 / 3600.0
+    c = math.radians(course_deg)
+    m_lat = 111_320.0
+    m_lon = 111_320.0 * math.cos(math.radians(lat))
+    vel_lat = (speed_ms * math.cos(c)) / m_lat
+    vel_lon = (speed_ms * math.sin(c)) / m_lon
+
+    track = state.target_tracks.get(target_num)
+    if track is None:
+        # First fix for this target — no history to predict from.
+        state.target_tracks[target_num] = _TargetTrack(lat, lon, vel_lat, vel_lon, now)
+        return lat, lon
+
+    # Predict where the target should be based on last known velocity.
+    dt = now - track.last_t
+    pred_lat = track.lat + track.vel_lat * dt
+    pred_lon = track.lon + track.vel_lon * dt
+
+    # Blend prediction with measurement.
+    out_lat = _SMOOTH_ALPHA * lat + (1.0 - _SMOOTH_ALPHA) * pred_lat
+    out_lon = _SMOOTH_ALPHA * lon + (1.0 - _SMOOTH_ALPHA) * pred_lon
+
+    state.target_tracks[target_num] = _TargetTrack(out_lat, out_lon, vel_lat, vel_lon, now)
+    return out_lat, out_lon
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +173,7 @@ def _handle_ttm(ttm: TTM, state: _State, use_system_time: bool = False) -> None:
         log.warning("HDT is stale (%.0fs old)", _age(state.last_hdt_at))
 
     lat, lon = compute_target_position(state.last_rmc, ttm)
-    lat, lon = smooth_position(state, ttm.number, lat, lon)
+    lat, lon = smooth_position(state, ttm.number, lat, lon, ttm.speed, ttm.course)
     timestamp = datetime.now(timezone.utc) if use_system_time else state.last_rmc.timestamp
     submit(ttm, lat, lon, timestamp)
 
