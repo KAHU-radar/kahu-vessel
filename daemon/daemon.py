@@ -3,11 +3,22 @@
 Connects to the relay over TCP, processes incoming NMEA sentences, fuses
 TTM + RMC into absolute target positions, and submits them to TrackServer.
 
-Per line pipeline:
-  raw line → preprocess (checksum / normalise / filter)
-           → parse (TTM / HDT / RMC)
-           → update local state
-           → if TTM + RMC available: fuse → submit
+Pipeline (one NMEA line at a time):
+
+  relay TCP
+    → preprocess()       nmea.py   checksum / normalise / type-filter
+    → parse()            nmea.py   TTM / HDT / RMC → typed dataclasses
+    → update _State               store latest fix + heading
+    → compute_target_position()
+                         fusion.py range + true-bearing → lat/lon
+    → smooth_position()  daemon.py per-target rolling average (kill quant. noise)
+    → submit()           submit.py batch + upload to TrackServer
+
+If you need to add something, ask yourself which stage it belongs to:
+  • New NMEA sentence type?  → nmea.py
+  • Different coordinate math?  → fusion.py
+  • Filter on the output position?  → smooth_position() in this file
+  • Upload / batching logic?  → submit.py
 """
 
 from __future__ import annotations
@@ -17,7 +28,8 @@ import asyncio
 import logging
 import os
 import tomllib
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +43,10 @@ _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 30.0
 _STALENESS_THRESHOLD = 10.0  # seconds; see ARCHITECTURE.md §5
 
+# Rolling-average window for smooth_position().
+# Increase to smooth more; decrease for less lag.  1 = off.
+_SMOOTH_N = 3
+
 
 # ---------------------------------------------------------------------------
 # State
@@ -42,6 +58,9 @@ class _State:
     last_hdt_at: datetime | None = None
     last_rmc: RMC | None = None
     last_rmc_at: datetime | None = None
+    # Per-target position history for the rolling average smoother.
+    # Key: TTM target number (int).  Value: deque of (lat, lon) tuples.
+    smooth_positions: dict[int, deque] = field(default_factory=dict)
 
 
 def _age(ts: datetime | None) -> float:
@@ -49,6 +68,30 @@ def _age(ts: datetime | None) -> float:
     if ts is None:
         return float("inf")
     return (datetime.now(timezone.utc) - ts).total_seconds()
+
+
+# ---------------------------------------------------------------------------
+# Position smoother
+# ---------------------------------------------------------------------------
+
+def smooth_position(
+    state: _State, target_num: int, lat: float, lon: float
+) -> tuple[float, float]:
+    """Rolling average of the last _SMOOTH_N positions for one ARPA target.
+
+    This is the only filter on the output position.  It kills the zig-zag
+    caused by 0.1 nm range quantization (targets alternating between adjacent
+    bins each sweep) without distorting the track geometry.
+
+    Returns the raw point until the window fills, then returns the mean.
+    If you need stronger smoothing, raise _SMOOTH_N.  Don't add another filter
+    on top of this one — fix the root cause instead.
+    """
+    buf = state.smooth_positions.setdefault(target_num, deque(maxlen=_SMOOTH_N))
+    buf.append((lat, lon))
+    avg_lat = sum(p[0] for p in buf) / len(buf)
+    avg_lon = sum(p[1] for p in buf) / len(buf)
+    return avg_lat, avg_lon
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +134,7 @@ def _handle_ttm(ttm: TTM, state: _State, use_system_time: bool = False) -> None:
         log.warning("HDT is stale (%.0fs old)", _age(state.last_hdt_at))
 
     lat, lon = compute_target_position(state.last_rmc, ttm)
+    lat, lon = smooth_position(state, ttm.number, lat, lon)
     timestamp = datetime.now(timezone.utc) if use_system_time else state.last_rmc.timestamp
     submit(ttm, lat, lon, timestamp)
 
